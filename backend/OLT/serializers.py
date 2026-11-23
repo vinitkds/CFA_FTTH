@@ -1,5 +1,7 @@
+import copy
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
-from django.contrib.auth.models import User
+# from django.contrib.auth.models import User
 from .models import OLT, OLTInfraCharges
 from api.serializers import UserSerializer
 
@@ -14,11 +16,12 @@ class OLTSerializer(serializers.ModelSerializer):
             'OLT_IP', 'OA_Name', 'dateOfInstallation', 
             'franchisee_Name', 'located_at', 'REM_ID'
         ]
-        read_only_fields = ['created_at']
+        read_only_fields = ['created_at', 'added_by']
 
 class OLTInfraChargesSerializer(serializers.ModelSerializer):
-    TotalApplicableChargesThisYear = serializers.ReadOnlyField()
-    Amount_Balance = serializers.ReadOnlyField()
+    # olt_detail = OLTSerializer()
+    # TotalApplicableChargesThisYear = serializers.ReadOnlyField()
+    # Amount_Balance = serializers.ReadOnlyField()
     
     # Exposes hardware info dynamically without executing extra standalone requests
     olt_detail = OLTSerializer(source='OLT', read_only=True)
@@ -26,23 +29,36 @@ class OLTInfraChargesSerializer(serializers.ModelSerializer):
     class Meta:
         model = OLTInfraCharges
         fields = [
-            'id', 'OLT', 'olt_detail', 'Financial_Year', 'Previous_dues',
+            'id', 'OLT', 'olt_detail', 'financial_Year', 'previous_dues',
             'applicableInfraCharges', 'applicableSecurityDeposit', 'applicableOneTimeCharges',
             'infraChargesWaiver', 'securityDepositWaiver', 'oneTimeChargesWaiver',
             'REM_Invoice_No', 'amount_Collected', 
-            'TotalApplicableChargesThisYear', 'Amount_Balance'
+            'total_Applicable_Charges_This_Year', 'amount_Balance'
         ]
         # Keep Previous_dues read_only if you want the system calculation to strictly govern it
-        read_only_fields = ['previous_dues']
+        read_only_fields = ['previous_dues',
+                            'total_Applicable_Charges_This_Year',
+                            'amount_Balance'
+        ]
 
     def validate(self, attrs):
-        # Form an unsaved model instance out of the validated data payloads
-        instance = OLTInfraCharges(**attrs)
-        
-        # Trigger the model clean engine explicitly 
-        try:
-            instance.clean()
-        except serializers.ValidationError as e:
-            raise serializers.ValidationError(e.message_dict)
-            
-        return attrs
+            if self.instance:
+                # OLT and FY are locked after creation (model.save enforces this too)
+                for f in ('OLT', 'financial_Year'):
+                    if f in attrs and attrs[f] != getattr(self.instance, f):
+                        raise serializers.ValidationError(
+                            {f: "Cannot be changed after the record is created."}
+                        )
+                instance = copy.copy(self.instance)
+                for k, v in attrs.items():
+                    setattr(instance, k, v)
+            else:
+                instance = OLTInfraCharges(**attrs)
+
+            try:
+                instance.clean()
+            except DjangoValidationError as e:
+                raise serializers.ValidationError(
+                    e.message_dict if hasattr(e, 'error_dict') else e.messages
+                )
+            return attrs
